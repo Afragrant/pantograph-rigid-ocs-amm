@@ -1,0 +1,16 @@
+[workspace]
+authors = ["afragrant <394451070@qq.com>"]
+channels = ["conda-forge"]
+name = "pantograph-rigid-ocs-amm"
+platforms = ["linux-64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
+matplotlib = ">=3.11.1,<4"
+numpy = ">=2.5.2,<3"
+scipy = ">=1.18.0,<2"
+tqdm = ">=4.70.0,<5"
+pandas = ">=3.0.5,<4"
+openpyxl = ">=3.1.5,<4"
