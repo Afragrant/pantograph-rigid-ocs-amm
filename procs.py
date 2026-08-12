@@ -14,8 +14,7 @@ NM = 200
 DT_BASE = 5e-5  # [s]
 G = 9.8  # [m/s²]
 
-# KS 为受电弓–接触网之间的接触弹簧刚度 (接触界面参数), 不属于刚性接触网基础设施,
-# 故作为独立常量, 不并入接触网预设表.
+# KS 为受电弓–接触网之间的接触弹簧刚度
 KS = 82300  # 接触刚度 [N/m]
 ALPHA_C = 0.0125
 BETA_C = 0.0001
@@ -46,15 +45,16 @@ def contact_wire_wear(x, A_w: float = WEAR_AMPLITUDE, lambda_w: float = WEAR_WAV
 
 
 def contact_penetration(y_pantograph: float, y_contact_wire: float, wear_depth: float = 0.0) -> float:
-    """Return upward-positive penetration after underside contact-wire wear."""
+    """穿透量 = 弓头位移 - 接触线位移 - 磨耗深度，向上为正。"""
     return y_pantograph - y_contact_wire - wear_depth
 
 
 def rigid_overhead_contact_system_params(rigid_overhead_contact_system: int, N_spans: int | None = None):
-    """Return (L, N, rhoA, EI, KEQ, MEQ, MZ, L_MZ) for the selected overhead contact system preset.
+    """返回指定刚性接触网预设的结构参数。
 
-    悬挂/接头参数 (KEQ 支撑等效刚度、MEQ 支撑等效质量、MZ 汇流排接头等效质量、
-    L_MZ 汇流排单段长度) 作为刚性接触网基础设施的一部分随预设一并返回.
+    返回 (L, N, rhoA, EI, KEQ, MEQ, MZ, L_MZ)：
+    L 跨距，N 跨数，rhoA 线密度，EI 抗弯刚度，
+    KEQ 悬挂刚度，MEQ 悬挂质量，MZ 汇流排接头等效质量，L_MZ 汇流排长度。
     """
     table = {
         # L,    N,  rhoA, EI,       KEQ,  MEQ, MZ,   L_MZ
@@ -90,9 +90,9 @@ def rigid_overhead_contact_system_params(rigid_overhead_contact_system: int, N_s
 
 
 def pantograph_params(ptype: int):
-    """
-    Return (m1,m2,m3, k1,k2,k3, c1,c2,c3, F0) for the selected pantograph.
-    m/k/c 下标 1→3 依次对应弓头(顶)、中间框架、底架；F0 为抬升力。
+    """返回所选受电弓的 (m1,m2,m3, k1,k2,k3, c1,c2,c3, F0)。
+
+    m/k/c 下标 1→3 依次对应弓头、上框架、下框架；F0 为抬升力。
     """
     table = {
         1: (7.12, 6.00, 5.80, 9430.0, 14100.0, 0.1, 0, 0, 70.0, 120.0),  # DSA380
@@ -105,7 +105,7 @@ def pantograph_params(ptype: int):
 
 
 def compute_busbar_positions(LS: float, l_mz: float, offset: float = BUSBAR_JOINT_OFFSET) -> np.ndarray:
-    """Return busbar-joint positions within a uniform segment layout."""
+    """返回等间距布置下的汇流排接头位置。"""
     if l_mz <= 0:
         raise ValueError(f'l_mz must be positive, got {l_mz}')
     if not 0 <= offset < LS:
@@ -150,8 +150,7 @@ def run_simulation(
     LS = L * N
 
     t_total = LS / v
-    # Do not evaluate the moving contact outside the simply-supported beam.
-    n_steps = int(np.floor(t_total / dt)) + 1
+    n_steps = int(np.floor(t_total / dt)) + 1  # 接触点只在梁范围内移动，步数按全程时间取整
     t_vec = np.arange(n_steps, dtype=float) * dt
     x_vec = v * t_vec
 
@@ -218,7 +217,7 @@ def run_simulation(
     F_grav_mz = -MZ * G * Phi_mz.sum(axis=1)
     F_gravity = F_grav_beam + F_grav_sup + F_grav_mz
 
-    # --- 找形等效：悬挂点静态位移归零 ---
+    # 找形等效：悬挂点静态位移归零
     # 约束悬挂点处模态位移 Phi_sup.T @ q = 0，使支撑点在静态平衡态位于设计高度。
     # 这相当于调节悬挂弹簧原长，动力学中仍保留 KEQ 弹簧。
     n_sup = Phi_sup.shape[1]
@@ -248,8 +247,7 @@ def run_simulation(
     F_base = np.zeros(n_dof)
     F_base[3:] = F_gravity
 
-    # Woodbury 预计算: Newmark 常量系数 + 无接触系统矩阵 P 的 Cholesky 分解.
-    # 每步有效矩阵 Kt = P + KS·w wᵀ (秩-1 接触), 用 Sherman-Morrison 把 O(n³) 解降为 O(n²).
+    # Woodbury 预分解：P 的 Cholesky 分解只做一次，接触秩-1 更新用 Sherman-Morrison 出解
     beta_nm, gamma_nm = 0.25, 0.5
     a0 = 1.0 / (beta_nm * dt * dt)
     a1 = gamma_nm / (beta_nm * dt)
@@ -289,10 +287,10 @@ def run_simulation(
     Y = np.zeros(n_dof)
     V = np.zeros(n_dof)
 
-    # Catenary starts at static gravity equilibrium
+    # 接触网从重力静平衡位形起步
     Y[3:] = q_static
 
-    # Pantograph initial state: solve static balance with contact spring engaged at x = 0
+    # 受电弓初值：x=0 处挂接触弹簧求静平衡
     phi_0 = phi_at(0.0)
     u_c_0 = phi_0 @ q_static
     K_p_static = K_p.copy()
@@ -300,7 +298,7 @@ def run_simulation(
     F_p_static = F_p_eff + np.array([KS * u_c_0, 0.0, 0.0])
     Y[:3] = np.linalg.solve(K_p_static, F_p_static)
 
-    # Consistent initial acceleration including the contact-spring assembly at x = 0
+    # 初始加速度按含接触弹簧的装配体求解
     Kc0 = np.zeros((n_dof, n_dof))
     Kc0[0, 0] = KS
     Kc0[0, 3:] = -KS * phi_0
@@ -393,7 +391,7 @@ def run_simulation(
             print(f'  Warning: Newton/active-set did not converge at {newton_failures} step(s)')
 
     # 低通滤波开关: 启用时统计与绘图全部使用滤波后信号, 关闭时为原始信号.
-    # 例外: 离线率必须用未滤波的原始接触力统计, 零相位低通会把 F=0 的采样平滑为非零, 导致离线"消失".
+    # 例外：离线率必须用未滤波的原始接触力统计，低通会把 F=0 的采样平滑为非零，导致离线被掩盖。
     contact_force_raw = contact_force  # lowpass_filter 返回新数组, 此引用零拷贝保留原始信号
     if lowpass:
         fs = 1.0 / dt
@@ -465,7 +463,7 @@ def plot_results(
     out_dir: str | Path = './result/pc_plots',
     show: bool = True,
 ):
-    """Plot contact force, pantograph head displacement, and OCS displacement."""
+    """绘制接触力、弓头位移、接触网位移（全程 + 稳定段）。"""
     stable_label = results.get('stable_label', f'first/last {N_SKIP_SPANS} spans skipped')
     lp_hz = results.get('lowpass_hz')
     lp_note = f' · {lp_hz:.0f} Hz low-pass' if lp_hz else ''
@@ -477,7 +475,7 @@ def plot_results(
         ('Pantograph disp. [m]', 'y_pantograph', 'y_pantograph_stable'),
         ('OCS disp. [m]', 'y_rigid_overhead_contact_system', 'y_rigid_overhead_contact_system_stable'),
     ]
-    sup = f'Pantograph {pantograph} · OCS {rigid_overhead_contact_system} · {int(round(speed_kmh))} km/h' + lp_note
+    sup = f'Pantograph {pantograph} · OCS {rigid_overhead_contact_system} · {round(speed_kmh)} km/h' + lp_note
 
     x_full = results['x_vec']
     x_stab = results['x_stable']
@@ -497,7 +495,7 @@ def plot_results(
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    suffix = f'p{pantograph}_c{rigid_overhead_contact_system}_{int(round(speed_kmh))}kmh'
+    suffix = f'p{pantograph}_c{rigid_overhead_contact_system}_{round(speed_kmh)}kmh'
     fig_path = out_dir / f'pc_response_{suffix}.png'
     fig.savefig(fig_path, dpi=150)
     print(f'Figure saved → {fig_path}')
@@ -515,8 +513,8 @@ def plot_initial_catenary_shape(
     out_dir: str | Path = './result/pc_plots',
     show: bool = True,
 ):
-    """Plot the initial static shape of the rigid OCS, marking suspension and mid-span joint positions."""
-    L, N, rhoA, EI, KEQ, MEQ, MZ, L_MZ = rigid_overhead_contact_system_params(rigid_overhead_contact_system, N_spans)
+    """绘制刚性接触网初始静态位形，标出吊点与跨中接头位置。"""
+    L, N, rhoA, EI, _KEQ, MEQ, MZ, L_MZ = rigid_overhead_contact_system_params(rigid_overhead_contact_system, N_spans)
     LS = L * N
 
     modes = np.arange(1, NM_plot + 1, dtype=float)
@@ -525,15 +523,9 @@ def plot_initial_catenary_shape(
 
     x_j = L * np.arange(1, N, dtype=float)
     Phi_sup = norm_factor * np.sin(np.outer(modes * np.pi / LS, x_j))
-    M_add_sup = MEQ * Phi_sup @ Phi_sup.T
-    K_add_sup = KEQ * Phi_sup @ Phi_sup.T
 
     x_mz = compute_busbar_positions(LS, l_mz=L_MZ, offset=busbar_joint_offset)
     Phi_mz = norm_factor * np.sin(np.outer(modes * np.pi / LS, x_mz))
-    M_add_mz = MZ * Phi_mz @ Phi_mz.T
-
-    M_cat = np.eye(NM_plot) + M_add_sup + M_add_mz
-    K_cat = np.diag(omega_n**2) + K_add_sup
 
     int_sin = (LS / (modes * np.pi)) * (1.0 - np.cos(modes * np.pi))
     F_grav_beam = -rhoA * G * norm_factor * int_sin
