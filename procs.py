@@ -9,7 +9,7 @@ from tqdm import tqdm
 
 PANTOGRAPH = 3  # 1 = DSA380; 2 = DSA250; 3 = TSG18F
 RIGID_OVERHEAD_CONTACT_SYSTEM = 2
-SPEED_KMH = 120  # [km/h]；陈龙论文表2-3验证工况为 120 km/h
+SPEED_KMH = 120  # [km/h]；
 NM = 200
 DT_BASE = 5e-5  # [s]
 G = 9.8  # [m/s²]
@@ -21,8 +21,8 @@ BETA_C = 0.0001
 
 N_SKIP_SPANS = 8  # 统计稳定段时剔除首尾各 N_SKIP_SPANS 跨
 
-LOWPASS_HZ = 20.0  # 低通滤波截止频率 [Hz], 按 EN 50317:2012
-LOWPASS_ORDER = 6  # Butterworth 滤波器阶数, EN 50317:2012 要求 6 阶
+LOWPASS_HZ = 20.0  # 低通滤波截止频率 [Hz]
+LOWPASS_ORDER = 6  # Butterworth 滤波器阶数
 LOWPASS_ENABLED = True  # 是否启用低通滤波; False 时统计与绘图均为原始未滤波数据
 
 MAX_NEWTON_ITER = 10  # 每步接触 Newton / 有效集迭代最大次数
@@ -35,12 +35,12 @@ LINEAR_SOLVER = 'woodbury'
 WEAR_AMPLITUDE = 1.0e-3  # [m]
 WEAR_WAVELENGTH = 0.6  # [m]
 
-# 汇流排接头从模型起点开始布置；实际线路可按施工布置覆盖此参数.
+# 汇流排接头从模型起点开始布置.
 BUSBAR_JOINT_OFFSET = 0.0  # [m]
 
 
 def contact_wire_wear(x, A_w: float = WEAR_AMPLITUDE, lambda_w: float = WEAR_WAVELENGTH):
-    """接触线磨耗深度 W_cw = A_w/2 · (1 - cos(2πl/λ_w))；l 为接触线沿线长度坐标。"""
+    """接触线磨耗深度 W_cw = A_w/2 · (1 - cos(2πl/λ_w))。"""
     return 0.5 * A_w * (1.0 - np.cos(2.0 * np.pi * x / lambda_w))
 
 
@@ -92,7 +92,7 @@ def rigid_overhead_contact_system_params(rigid_overhead_contact_system: int, N_s
 def pantograph_params(ptype: int):
     """返回所选受电弓的 (m1,m2,m3, k1,k2,k3, c1,c2,c3, F0)。
 
-    m/k/c 下标 1→3 依次对应弓头、上框架、下框架；F0 为抬升力。
+    m/k/c 下标 1→3 依次对应弓头、上框架、下框架；F0 为下框架净抬升力。
     """
     table = {
         1: (7.12, 6.00, 5.80, 9430.0, 14100.0, 0.1, 0, 0, 70.0, 120.0),  # DSA380
@@ -114,8 +114,7 @@ def compute_busbar_positions(LS: float, l_mz: float, offset: float = BUSBAR_JOIN
 
 
 def lowpass_filter(sig: np.ndarray, fs: float, fc: float = LOWPASS_HZ, order: int = LOWPASS_ORDER) -> np.ndarray:
-    """按 EN 50317:2012 的 6 阶 Butterworth 20 Hz 低通滤波；单向滤波保持标准规定的幅频特性。
-
+    """6 阶 Butterworth 20 Hz 低通滤波；单向滤波保持标准规定的幅频特性。
     使用 sosfilt_zi 将初始状态设为与 sig[0] 匹配的稳态，避免零初始条件引起的启动振铃。
     """
     sos = butter(order, fc, fs=fs, output='sos')
@@ -208,7 +207,7 @@ def run_simulation(
 
     M_cat = np.eye(NM) + M_add_sup + M_add_mz
     K_cat = np.diag(omega_n**2) + K_add_sup
-    # 瑞利阻尼C = α·M + β·K, 含支撑/接头的满矩阵.
+    # 瑞利阻尼C = α·M + β·K.
     C_cat = ALPHA_C * M_cat + BETA_C * K_cat
 
     int_sin = (LS / (modes * np.pi)) * (1.0 - np.cos(modes * np.pi))
@@ -217,9 +216,7 @@ def run_simulation(
     F_grav_mz = -MZ * G * Phi_mz.sum(axis=1)
     F_gravity = F_grav_beam + F_grav_sup + F_grav_mz
 
-    # 找形等效：悬挂点静态位移归零
-    # 约束悬挂点处模态位移 Phi_sup.T @ q = 0，使支撑点在静态平衡态位于设计高度。
-    # 这相当于调节悬挂弹簧原长，动力学中仍保留 KEQ 弹簧。
+    # 以静态平衡位置作为动力扰动的零位移基准，同时通过原长偏置保留静态支撑力。
     n_sup = Phi_sup.shape[1]
     KKT = np.block(
         [
@@ -265,9 +262,9 @@ def run_simulation(
     def phi_at(x):
         return norm_factor * np.sin(modes * np.pi * x / LS)
 
-    # 受电弓装配预应力：把稳定段静态接触力均值锚定到 F0。
-    # 串联链模型中，导线静态高度 u(x) 会通过接地弹簧 k3 调制 Fc；
-    # 加入常量基底预应力 P3 后，mean(Fc) = F0，而动态波动特性不变。
+    # 下框架接地弹簧 k3 的零力参考位置按名义准静态装配状态设置。
+    # F0 是施加在下框架上的净抬升力，不是额外的常量接触力。
+    # 等效到右端项后，k3 的参考位置贡献为 k3 * y3_reference。
     # S_p 包含接触弹簧、受电弓弹簧以及接触网平均局部柔度（trace(K_inv)/(rhoA*LS)）。
     K_cat_inv = np.linalg.inv(K_cat)
     c_cat_mean = np.trace(K_cat_inv) / (rhoA * LS)
@@ -279,9 +276,9 @@ def run_simulation(
     else:
         # 跨数不足时退化为全线均值，避免空窗口导致 NaN
         u_mean = np.mean(np.array([phi_at(x) @ q_static for x in x_vec]))
-    P3 = k3 * (F0 * S_p + u_mean)
+    y3_reference = F0 * S_p + u_mean
     F_p_eff = F_p.copy()
-    F_p_eff[2] += P3
+    F_p_eff[2] += k3 * y3_reference
     F_base[:3] = F_p_eff
 
     Y = np.zeros(n_dof)
