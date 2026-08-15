@@ -114,7 +114,7 @@ def compute_busbar_positions(LS: float, l_mz: float, offset: float = BUSBAR_JOIN
 
 
 def lowpass_filter(sig: np.ndarray, fs: float, fc: float = LOWPASS_HZ, order: int = LOWPASS_ORDER) -> np.ndarray:
-    """6 阶 Butterworth 20 Hz 低通滤波；单向滤波保持标准规定的幅频特性。
+    """Butterworth 低通滤波（阶数/截止频率由参数决定，默认 LOWPASS_ORDER / LOWPASS_HZ）；单向滤波保持标准规定的幅频特性。
     使用 sosfilt_zi 将初始状态设为与 sig[0] 匹配的稳态，避免零初始条件引起的启动振铃。
     """
     sos = butter(order, fc, fs=fs, output='sos')
@@ -269,10 +269,10 @@ def run_simulation(
     K_cat_inv = np.linalg.inv(K_cat)
     c_cat_mean = np.trace(K_cat_inv) / (rhoA * LS)
     S_p = 1.0 / KS + 1.0 / k1 + 1.0 / k2 + c_cat_mean
-    i_start_pre = np.searchsorted(x_vec, N_SKIP_SPANS * L, side='left')
-    i_end_pre = np.searchsorted(x_vec, LS - N_SKIP_SPANS * L, side='right')
-    if i_start_pre < i_end_pre:
-        u_mean = np.mean(np.array([phi_at(x) @ q_static for x in x_vec[i_start_pre:i_end_pre]]))
+    i_start = np.searchsorted(x_vec, N_SKIP_SPANS * L, side='left')
+    i_end = np.searchsorted(x_vec, LS - N_SKIP_SPANS * L, side='right')
+    if i_start < i_end:
+        u_mean = np.mean(np.array([phi_at(x) @ q_static for x in x_vec[i_start:i_end]]))
     else:
         # 跨数不足时退化为全线均值，避免空窗口导致 NaN
         u_mean = np.mean(np.array([phi_at(x) @ q_static for x in x_vec]))
@@ -387,14 +387,12 @@ def run_simulation(
         if newton_failures:
             print(f'  Warning: Newton/active-set did not converge at {newton_failures} step(s)')
 
-    # 低通滤波开关: 启用时统计与绘图全部使用滤波后信号, 关闭时为原始信号.
+    # 低通滤波开关: 仅对接触力滤波, 弓头/接触网位移保持原始信号.
     # 例外：离线率必须用未滤波的原始接触力统计，低通会把 F=0 的采样平滑为非零，导致离线被掩盖。
     contact_force_raw = contact_force  # lowpass_filter 返回新数组, 此引用零拷贝保留原始信号
     if lowpass:
         fs = 1.0 / dt
         contact_force = lowpass_filter(contact_force, fs)
-        y_pantograph = lowpass_filter(y_pantograph, fs)
-        y_rigid_overhead_contact_system = lowpass_filter(y_rigid_overhead_contact_system, fs)
 
     def compute_stats(fc_arr):
         if len(fc_arr) == 0:
@@ -408,8 +406,6 @@ def run_simulation(
 
     stats_full = compute_stats(contact_force)
 
-    i_start = np.searchsorted(x_vec, N_SKIP_SPANS * L, side='left')
-    i_end = np.searchsorted(x_vec, LS - N_SKIP_SPANS * L, side='right')
     stable_label = f'first/last {N_SKIP_SPANS} spans skipped'
     contact_force_stable = contact_force[i_start:i_end]
     x_stable = x_vec[i_start:i_end]
@@ -447,6 +443,10 @@ def run_simulation(
         'stats_stable_raw': stats_stable_raw,
         'stable_label': stable_label,
         'lowpass_hz': LOWPASS_HZ if lowpass else None,
+        'pantograph': pantograph,
+        'rigid_overhead_contact_system': rigid_overhead_contact_system,
+        'speed_kmh': speed_kmh,
+        'newton_failures': newton_failures,
         'elapsed_s': elapsed_s,
         'solve_time_s': solve_time,
     }
@@ -454,16 +454,23 @@ def run_simulation(
 
 def plot_results(
     results: dict,
-    pantograph: int = PANTOGRAPH,
-    rigid_overhead_contact_system: int = RIGID_OVERHEAD_CONTACT_SYSTEM,
-    speed_kmh: float = SPEED_KMH,
+    pantograph: int | None = None,
+    rigid_overhead_contact_system: int | None = None,
+    speed_kmh: float | None = None,
     out_dir: str | Path = './result/pc_plots',
     show: bool = True,
 ):
     """绘制接触力、弓头位移、接触网位移（全程 + 稳定段）。"""
+    pantograph = pantograph if pantograph is not None else results.get('pantograph', PANTOGRAPH)
+    rigid_overhead_contact_system = (
+        rigid_overhead_contact_system
+        if rigid_overhead_contact_system is not None
+        else results.get('rigid_overhead_contact_system', RIGID_OVERHEAD_CONTACT_SYSTEM)
+    )
+    speed_kmh = speed_kmh if speed_kmh is not None else results.get('speed_kmh', SPEED_KMH)
     stable_label = results.get('stable_label', f'first/last {N_SKIP_SPANS} spans skipped')
     lp_hz = results.get('lowpass_hz')
-    lp_note = f' · {lp_hz:.0f} Hz low-pass' if lp_hz else ''
+    lp_note = f' · {lp_hz:.0f} Hz low-pass (contact force)' if lp_hz else ''
 
     col_titles = ('Full run', f'Stable window ({stable_label})')
     xlabel = 'Position x [m]'
@@ -510,7 +517,7 @@ def plot_initial_catenary_shape(
     out_dir: str | Path = './result/pc_plots',
     show: bool = True,
 ):
-    """绘制刚性接触网初始静态位形，标出吊点与跨中接头位置。"""
+    """绘制刚性接触网初始静态位形，标出吊点与汇流排接头位置。"""
     L, N, rhoA, EI, _KEQ, MEQ, MZ, L_MZ = rigid_overhead_contact_system_params(rigid_overhead_contact_system, N_spans)
     LS = L * N
 
@@ -541,7 +548,7 @@ def plot_initial_catenary_shape(
     sol = np.linalg.solve(KKT, np.concatenate([F_gravity, np.zeros(n_sup)]))
     q_static = sol[:NM_plot]
 
-    x_fine = np.linspace(0, LS, 2000)
+    x_fine = np.linspace(0, LS, 5000)
     phi_fine = norm_factor * np.sin(np.outer(modes * np.pi / LS, x_fine))
     u_static = phi_fine.T @ q_static
 
@@ -556,7 +563,7 @@ def plot_initial_catenary_shape(
     ax.plot(x_fine, u_static * 1e3, lw=1.2, color='C0', label='Catenary vertical disp.')
 
     ax.scatter(all_sup, u_sup_all * 1e3, color='red', s=50, zorder=5, marker='o', label='Suspension point')
-    ax.scatter(x_mz, u_mz * 1e3, color='green', s=50, zorder=5, marker='^', label='Mid-span joint')
+    ax.scatter(x_mz, u_mz * 1e3, color='green', s=50, zorder=5, marker='^', label='Busbar joint')
 
     ax.set_xlabel('Position x [m]')
     ax.set_ylabel('Vertical disp. [mm]')
